@@ -35,7 +35,7 @@ static void notifyCallback(
     Serial.println();
 
     // Data validation and storage logic...
-    response = "Data sent from client";
+    response = "success";
     sendResponse = true;
     // Store the response characteristic globally
     pResponseCharacteristic = pBLERemoteCharacteristic->getRemoteService()->getCharacteristic(responseCharUUID);
@@ -146,7 +146,6 @@ void setup() {
 void loop() {
   if (connected && sendResponse) {
       if (pResponseCharacteristic != nullptr) {
-          std::string response = "Data received";
           pResponseCharacteristic->writeValue(response);
           sendResponse = false;
           Serial.println("Response successfully sent back to server");

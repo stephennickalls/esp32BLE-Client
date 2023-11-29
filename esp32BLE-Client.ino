@@ -1,10 +1,19 @@
 #include "BLEDevice.h"
 //#include "BLEScan.h"
 
+
+int sendResponse = false;
+std::string response;
+
+static BLERemoteCharacteristic* pResponseCharacteristic = nullptr;
+
+
 // The remote service we wish to connect to.
 static BLEUUID serviceUUID("4fafc201-1fb5-459e-8fcc-c5c9c331914b");
 // The characteristic of the remote service we are interested in.
 static BLEUUID    charUUID("beb5483e-36e1-4688-b7f5-ea07361b26a8");
+static BLEUUID responseCharUUID("aeb5483e-36e1-4688-b7f5-ea07361b26a9");
+
 
 static boolean doConnect = false;
 static boolean connected = false;
@@ -12,20 +21,26 @@ static boolean doScan = false;
 static BLERemoteCharacteristic* pRemoteCharacteristic;
 static BLEAdvertisedDevice* myDevice;
 
-static void notifyCallback(
-  BLERemoteCharacteristic* pBLERemoteCharacteristic,
-  uint8_t* pData,
-  size_t length,
-  bool isNotify) {
-    // Serial.print("Notify callback for characteristic ");
-    // Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
-    // Serial.print(" of data length ");
-    // Serial.println(length);
+
+
+
+static void notifyCallback( 
+    BLERemoteCharacteristic* pBLERemoteCharacteristic,
+    uint8_t* pData,
+    size_t length,
+    bool isNotify) {
+    
     Serial.print("data: ");
     Serial.write(pData, length);
     Serial.println();
-    delay(1000);
+
+    // Data validation and storage logic...
+    response = "Data sent from client";
+    sendResponse = true;
+    // Store the response characteristic globally
+    pResponseCharacteristic = pBLERemoteCharacteristic->getRemoteService()->getCharacteristic(responseCharUUID);
 }
+
 
 class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient* pclient) {
@@ -129,6 +144,16 @@ void setup() {
 
 // This is the Arduino main loop function.
 void loop() {
+  if (connected && sendResponse) {
+      if (pResponseCharacteristic != nullptr) {
+          std::string response = "Data received";
+          pResponseCharacteristic->writeValue(response);
+          sendResponse = false;
+          Serial.println("Response successfully sent back to server");
+      } else {
+          Serial.println("pResponseCharacteristic was not found");
+      }
+  }
 
   // If the flag "doConnect" is true then we have scanned for and found the desired
   // BLE Server with which we wish to connect.  Now we connect to it.  Once we are 

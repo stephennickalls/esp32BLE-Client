@@ -15,6 +15,8 @@
 #define debugln(x)
 #endif
 
+#define api_key "bfe921e4-417c-4018-958b-7b099605abf3"
+
 WiFiCreds wifiCreds; // Create an instance of WiFiCreds
 
 // real time clock
@@ -34,12 +36,12 @@ int currentCycleNumber;
 const int cycleNumber = 0;  // the cycle number that the system makes data available on
 
 
-
 // Use the instance to access methods
 const char* ssid = wifiCreds.getSSID(); 
 const char* password = wifiCreds.getPassword(); 
 // const char* ssid = wifiCreds.getOfficeSSID(); 
 // const char* password = wifiCreds.getOfficePassword(); 
+
 
 enum class programState: uint8_t {
   CONFIG_CHECK,
@@ -63,8 +65,6 @@ DynamicJsonDocument parseJson(String jsonResponse) {
   return doc;
 }
 
-
-
 void constructEndpointUrl(char* buffer, size_t bufferLen, const char* baseEndPoint, const char* identifier, const char* action) {
   // debugln("constructEndpointUrl called");
     snprintf(buffer, bufferLen, "%s%s%s", baseEndPoint, identifier, action);
@@ -72,8 +72,7 @@ void constructEndpointUrl(char* buffer, size_t bufferLen, const char* baseEndPoi
 
 bool toggleConfigSensorsFlag() {
   // debugln("getHubConfig called");
-    const char* baseConfigEndPoint = "https://beevibe-prod-7815d8f510b2.herokuapp.com/api/hubconfig/";
-    const char* api_key = "bfe921e4-417c-4018-958b-7b099605abf3";
+    const char* baseConfigEndPoint = "https://beevibe-prod-7815d8f510b2.herokuapp.com/api/datacollection/hubconfig/";
     const char* action = "/toggle_sensor_config_flag/";
 
     char endPoint[256]; // Buffer to hold the complete endpoint URL
@@ -99,8 +98,8 @@ bool toggleConfigSensorsFlag() {
 
 String getHubConfig() {
   // debugln("getHubConfig called");
-    const char* baseConfigEndPoint = "https://beevibe-prod-7815d8f510b2.herokuapp.com/api/hubconfig/";
-    const char* api_key = "bfe921e4-417c-4018-958b-7b099605abf3";
+    const char* baseConfigEndPoint = "https://beevibe-prod-7815d8f510b2.herokuapp.com/api/datacollection/hubconfig/";
+    // api_key = "bfe921e4-417c-4018-958b-7b099605abf3";
     const char* action = "/get_config/";
 
     char endPoint[256]; // Buffer to hold the complete endpoint URL
@@ -117,6 +116,44 @@ String getHubConfig() {
     return response;
 }
 
+int postErrorToAPI(const char* device_type, const char* device_id, const char* error_message) {
+    // format json
+    StaticJsonDocument<200> jsonDoc;
+    jsonDoc["device_type"] = device_type; 
+    jsonDoc["device_id"] = device_id;
+    jsonDoc["error_message"] = error_message;
+    jsonDoc["api_key"] = api_key;
+
+    char jsonString[500];
+    serializeJson(jsonDoc, jsonString);
+
+    const char* deviceErrorReportsEndPoint = "https://beevibe-prod-7815d8f510b2.herokuapp.com/api/datacollection/deviceerrorreports/";
+
+    // char endPoint[256]; // Buffer to hold the complete endpoint URL
+    // constructEndpointUrl(endPoint, sizeof(endPoint), baseConfigEndPoint, "", "");
+    // debugln(endPoint);
+
+    HTTPClient http;
+    http.begin(deviceErrorReportsEndPoint);
+
+    // Set header for JSON content type
+    http.addHeader("Content-Type", "application/json");
+
+    // POST request with JSON payload
+    int httpResponseCode = http.POST(jsonString);
+
+    if (httpResponseCode > 0) {
+        String response = http.getString(); // Get the response to the request
+        debugln(response);
+    } else {
+        debugln("Error on sending POST: " + String(httpResponseCode));
+    }
+
+    http.end(); // Free resources
+    return httpResponseCode;
+}
+
+
 void printDateTime(const DateTime& dt) {
     char dateTimeStr[20];
     snprintf(dateTimeStr, sizeof(dateTimeStr), "%04d-%02d-%02dT%02d:%02d:%02dZ", 
@@ -125,17 +162,20 @@ void printDateTime(const DateTime& dt) {
 }
 
 bool calibrateRTCTime(const DateTime& rtcTime, const char* apiTime) {
+
     DateTime currentAPITime = DateTime(apiTime);
 
     long timeDiff = abs((long)rtcTime.unixtime() - (long)currentAPITime.unixtime());
 
-    // debug("API Time: ");
-    // printDateTime(currentAPITime);
-    // debug("RTC Time: ");
-    // printDateTime(rtcTime);
 
     // If the time difference is greater than 60 seconds, adjust the RTC
     if (timeDiff > 60) {
+        debugln("########### The RTC time was different ##################");
+        debug("API Time: ");
+        printDateTime(currentAPITime);
+        debug("RTC Time: ");
+        printDateTime(rtcTime);
+      // adjuct time
         rtc.adjust(currentAPITime);
         debugln("TIME ADJUSTED");
         return true; // Indicate that the RTC was adjusted
@@ -143,6 +183,19 @@ bool calibrateRTCTime(const DateTime& rtcTime, const char* apiTime) {
 
     return false; // Indicate no adjustment was needed
 }
+
+void configureSensorUUIDs(const JsonArray& sensors) {
+    for (JsonObject sensor : sensors) {
+        const char* uuid = sensor["uuid"]; // Extract the UUID
+        int sensorType = sensor["sensor_type"]; // Extract the sensor type
+        // TODO: save uuids for ble comms
+        // Use the UUID and other data as needed
+        debug("Sensor UUID: ");
+        debugln(uuid);
+        // Additional processing for each sensor can go here
+    }
+}
+
 
 
 
@@ -185,6 +238,8 @@ void programStateMachine() {
   // SENSOR_CONFIG,
   // BLE_CONNECT_READ_SAVE,
   // MOBILE_CONNECT_TRANSMIT_DATA
+  bool actionComplete = toggleConfigSensorsFlag();
+  debugln("############ config sensors flag toggled at the begining of program state for debug reasons: remove this when tested");
 
     DateTime now = rtc.now();
     int calculatedCurrentCycleNumber = getCurrentCycleNumber(now);
@@ -222,11 +277,26 @@ void programStateMachine() {
         }
         case programState::SENSOR_CONFIG: {
             debugln("SENSOR_CONFIG called");
+            // look for and process sensor uuids
+            if (configJSON.containsKey("sensors")) {
+                JsonArray sensors = configJSON["sensors"];
+                configureSensorUUIDs(sensors);
+            } else {
+                debugln("No sensors found in JSON");
+            }
             bool actionComplete = toggleConfigSensorsFlag();
             if (!actionComplete){
-              // TODO: post error to api
-              debugln("config sensors flag reset");
+              // constructing error report
+              const char* device_type = "hub"; 
+              const char* device_id = api_key;
+              const char* error_message = "The hub was unable to save sensor configuration";
+              // Timestamp added by api
+              int responseCode = postErrorToAPI(device_type, device_id, error_message);
+              debug("post error response code: ");
+              debugln(String(responseCode));
+              
             }
+            debugln("Sensor config called and completed without error");
             delay(2000);
             debugln("sleep now");
             esp_sleep_enable_timer_wakeup(15 * 1000000); 
@@ -248,7 +318,7 @@ int getCurrentCycleNumber(const DateTime& currentTime) {
     int currentSecond = currentTime.second();
 
     // Calculate the remaining seconds in the current 8-minute window
-    int totalSecondsRemaining = (8 - (currentMinute % 8)) * 60 - currentSecond;
+    int totalSecondsRemaining = (4 - (currentMinute % 4)) * 60 - currentSecond;
 
     // If less than 10 seconds remain, treat as the beginning of the next cycle
     if (totalSecondsRemaining <= 10) {
@@ -256,8 +326,10 @@ int getCurrentCycleNumber(const DateTime& currentTime) {
     }
 
     // Otherwise, calculate the cycle number normally
-    int minutesSinceHourStart = currentMinute % 8;
+    int minutesSinceHourStart = currentMinute % 4;
     return minutesSinceHourStart / 2;
 }
+
+
 
 

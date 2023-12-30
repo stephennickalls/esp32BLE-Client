@@ -1,6 +1,7 @@
 #include <ArduinoJson.h>
 #include <NimBLEDevice.h>
 #include <HTTPClient.h>
+#include <Preferences.h>
 #include <RTClib.h>
 #include <WiFi.h> 
 #include "WiFiCreds.h"
@@ -15,7 +16,12 @@
 #define debugln(x)
 #endif
 
-#define api_key "bfe921e4-417c-4018-958b-7b099605abf3"
+const char* api_key = "bfe921e4-417c-4018-958b-7b099605abf3";
+const char* device_type = "hub";
+
+
+// non-volatile storage
+Preferences preferences;
 
 WiFiCreds wifiCreds; // Create an instance of WiFiCreds
 
@@ -184,17 +190,62 @@ bool calibrateRTCTime(const DateTime& rtcTime, const char* apiTime) {
     return false; // Indicate no adjustment was needed
 }
 
-void configureSensorUUIDs(const JsonArray& sensors) {
+// save sensor uuids to non-volatile storage
+bool configureSensorUUIDs(const JsonArray& sensors) {
+    debugln("configureSensorUUIDs called");
+
+    char errorMessage[50];
+
+    bool success = preferences.begin("sensor_storage", false); // Open NVS in RW mode
+    if (!success) {
+        int responseCode = postErrorToAPI(device_type, api_key, "Failed to open NVS storage");
+        debug("Failed to open NVS storage");
+        return false; // Exit if unable to open NVS
+    }
+
+    preferences.clear(); // Clear any previous entries
+    int sensorIndex = 0;
+    bool errorOccurred = false;
+
     for (JsonObject sensor : sensors) {
         const char* uuid = sensor["uuid"]; // Extract the UUID
-        int sensorType = sensor["sensor_type"]; // Extract the sensor type
-        // TODO: save uuids for ble comms
-        // Use the UUID and other data as needed
-        debug("Sensor UUID: ");
+        // Save each UUID with a unique key
+        String key = "sensor" + String(sensorIndex);
+        success = preferences.putString(key.c_str(), String(uuid));
+        if (!success) {
+            strncpy(errorMessage, "Failed to save UUID for a sensor", sizeof(errorMessage));
+            debug("Failed to save UUID for sensor");
+            debugln(sensorIndex);
+            errorOccurred = true;
+            break; // Exit the loop if error occurs
+        }
+        sensorIndex++;
+        debug("Sensor UUID saved: ");
         debugln(uuid);
-        // Additional processing for each sensor can go here
     }
+
+    if (!errorOccurred) {
+        // Save the count of sensors only if no errors occurred
+        success = preferences.putInt("sensorCount", sensorIndex);
+        if (!success) {
+            strncpy(errorMessage, "Failed to save sensor count", sizeof(errorMessage));
+            debugln("Failed to save sensor count!");
+            return false;
+        }
+    }
+
+    preferences.end(); // Close NVS storage
+
+    if (errorOccurred) {
+        // Handle error, e.g., retry, log error, send error message, etc.
+        int responseCode = postErrorToAPI(device_type, api_key, errorMessage);
+        debugln("Error occurred while configuring sensor UUIDs");
+        return false;
+    }
+
+  return true;
 }
+
 
 
 
@@ -276,26 +327,22 @@ void programStateMachine() {
             break;
         }
         case programState::SENSOR_CONFIG: {
+            bool configSensorsResponse;
             debugln("SENSOR_CONFIG called");
             // look for and process sensor uuids
             if (configJSON.containsKey("sensors")) {
                 JsonArray sensors = configJSON["sensors"];
-                configureSensorUUIDs(sensors);
+                configSensorsResponse = configureSensorUUIDs(sensors);
+                debug("configSensorsResponse: ");
+                debugln(configSensorsResponse);
             } else {
                 debugln("No sensors found in JSON");
             }
-            bool actionComplete = toggleConfigSensorsFlag();
-            if (!actionComplete){
-              // constructing error report
-              const char* device_type = "hub"; 
-              const char* device_id = api_key;
-              const char* error_message = "The hub was unable to save sensor configuration";
-              // Timestamp added by api
-              int responseCode = postErrorToAPI(device_type, device_id, error_message);
-              debug("post error response code: ");
-              debugln(String(responseCode));
-              
+            if (!configSensorsResponse ){
+              // TODO: toggle config flag in api to accept bool value
+              debugln("Config sensors failed");
             }
+
             debugln("Sensor config called and completed without error");
             delay(2000);
             debugln("sleep now");

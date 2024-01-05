@@ -19,6 +19,12 @@
 const char* api_key = "bfe921e4-417c-4018-958b-7b099605abf3";
 const char* device_type = "hub";
 
+// max number of services that we can be connected too
+const int MAX_SENSOR_COUNT = 5; // Maximum number of sensors
+const int MAX_SERVICE_COUNT = 5; // Maximum number of services
+const int MAX_CHARACTERISTIC_COUNT = 5; // Maximum number of characteristics per service
+
+
 
 // non-volatile storage
 Preferences preferences;
@@ -76,7 +82,7 @@ void constructEndpointUrl(char* buffer, size_t bufferLen, const char* baseEndPoi
     snprintf(buffer, bufferLen, "%s%s%s", baseEndPoint, identifier, action);
 }
 
-bool toggleConfigSensorsFlag() {
+bool writeConfigSensorsFlag() {
   // debugln("getHubConfig called");
     const char* baseConfigEndPoint = "https://beevibe-prod-7815d8f510b2.herokuapp.com/api/datacollection/hubconfig/";
     const char* action = "/toggle_sensor_config_flag/";
@@ -249,6 +255,46 @@ bool configureSensorUUIDs(const JsonArray& sensors) {
 
 
 
+void processSensorData() {
+    // Initialize NVS
+    preferences.begin("sensor_storage", true);
+    int sensorCount = preferences.getInt("sensorCount", 0);
+
+    NimBLEClient* pClient = NimBLEDevice::createClient();
+
+    for (int sensorIdx = 0; sensorIdx < sensorCount && sensorIdx < MAX_SENSOR_COUNT; sensorIdx++) {
+        // Retrieve each sensor UUID from NVS
+        String key = "sensor" + String(sensorIdx);
+        String sensorUUID = preferences.getString(key.c_str(), "");
+        
+        if (!sensorUUID.isEmpty()) {
+            if (!pClient->connect(sensorUUID.c_str())) {
+                debugln("Failed to connect, trying next sensor...");
+                continue;
+            }
+
+            // Retrieve all services
+            std::vector<NimBLERemoteService*> *services = pClient->getServices();
+            for (auto pService : *services) {
+                // Retrieve all characteristics for each service
+                std::vector<NimBLERemoteCharacteristic*> *characteristics = pService->getCharacteristics();
+                for (auto pCharacteristic : *characteristics) {
+                    String value = pCharacteristic->readValue();
+                    debugln(value);
+                }
+            }
+
+            // Disconnect from the BLE Server after processing
+            pClient->disconnect();
+        }
+    }
+
+    // Clean up
+    NimBLEDevice::deleteClient(pClient);
+    preferences.end();
+}
+
+
 
 
 void setup (){
@@ -271,10 +317,13 @@ void setup (){
     Serial.println("");
     Serial.print("Connected to WiFi with IP: ");
     Serial.println(WiFi.localIP());
-    debugln("Starting NimBLE Client");
 
+        // Initialize NimBLE
+    NimBLEDevice::init(""); // Optionally, you can pass a device name
 
-    debugln("setup complete");
+    debugln("NimBLE initialized");
+    debugln("Setup complete");
+   
 }
 
 
@@ -289,8 +338,8 @@ void programStateMachine() {
   // SENSOR_CONFIG,
   // BLE_CONNECT_READ_SAVE,
   // MOBILE_CONNECT_TRANSMIT_DATA
-  bool actionComplete = toggleConfigSensorsFlag();
-  debugln("############ config sensors flag toggled at the begining of program state for debug reasons: remove this when tested");
+  // writeConfigSensorsFlag(true); // REMOVE
+  debugln("############ config sensors flag set to true at the begining of program state for debug reasons: remove this when tested");
 
     DateTime now = rtc.now();
     int calculatedCurrentCycleNumber = getCurrentCycleNumber(now);
@@ -301,7 +350,8 @@ void programStateMachine() {
         static programState currentState = programState::BLE_CONNECT_READ_SAVE;
     }
 
-    static programState currentState = programState::CONFIG_CHECK;
+    // static programState currentState = programState::CONFIG_CHECK;
+    static programState currentState = programState::BLE_CONNECT_READ_SAVE;
 
     switch (currentState) {
       case programState::CONFIG_CHECK: {
@@ -316,6 +366,7 @@ void programStateMachine() {
                 bool timeReset = calibrateRTCTime(rtcTime, apiTime);
             } else {
               // TODO: implement error codes and message back to api 
+                // postErrorToAPI(device_type, api_key, errorMessage);
                 debugln("Current time not found in JSON");
             }
             // end time calibration
@@ -333,13 +384,14 @@ void programStateMachine() {
             if (configJSON.containsKey("sensors")) {
                 JsonArray sensors = configJSON["sensors"];
                 configSensorsResponse = configureSensorUUIDs(sensors);
-                debug("configSensorsResponse: ");
-                debugln(configSensorsResponse);
             } else {
                 debugln("No sensors found in JSON");
             }
             if (!configSensorsResponse ){
               // TODO: toggle config flag in api to accept bool value
+              // char errorMessage[50];
+              // strncpy(errorMessage, "Failed to save UUID for a sensor", sizeof(errorMessage));
+              // int responseCode = postErrorToAPI(device_type, api_key, errorMessage);
               debugln("Config sensors failed");
             }
 
@@ -352,6 +404,7 @@ void programStateMachine() {
         }
         case programState::BLE_CONNECT_READ_SAVE: {
             debugln("BLE_CONNECT_READ_SAVE called");
+            processSensorData();
             break;
         }
         default:

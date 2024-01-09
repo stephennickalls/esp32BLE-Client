@@ -24,8 +24,6 @@ const int MAX_SENSOR_COUNT = 5; // Maximum number of sensors
 const int MAX_SERVICE_COUNT = 5; // Maximum number of services
 const int MAX_CHARACTERISTIC_COUNT = 5; // Maximum number of characteristics per service
 
-
-
 // non-volatile storage
 Preferences preferences;
 
@@ -33,6 +31,11 @@ WiFiCreds wifiCreds; // Create an instance of WiFiCreds
 
 // real time clock
 RTC_DS3231 rtc;
+
+// global error messages
+const size_t errorJsonCapacity = JSON_ARRAY_SIZE(10) + JSON_OBJECT_SIZE(5) * 10 + 500;
+DynamicJsonDocument errorJsonDoc(errorJsonCapacity);
+JsonArray errorMessages;
 
 // hold the config json object from api when called
 // Specify the capacity of the JSON document. 
@@ -128,42 +131,62 @@ String getHubConfig() {
     return response;
 }
 
-int postErrorToAPI(const char* device_type, const char* device_id, const char* error_message) {
-    // format json
-    StaticJsonDocument<200> jsonDoc;
-    jsonDoc["device_type"] = device_type; 
-    jsonDoc["device_id"] = device_id;
-    jsonDoc["error_message"] = error_message;
+void addErrorMessageToJSON(const char* errorMessage, const char* deviceType, const char* device_id) {
+    char timestamp[25];
+    DateTime now = rtc.now();
+    snprintf(timestamp, sizeof(timestamp), "%04d-%02d-%02dT%02d:%02d:%02d",
+             now.year(), now.month(), now.day(),
+             now.hour(), now.minute(), now.second());
+
+    JsonObject errorObj = errorMessages.createNestedObject();
+    errorObj["device_type"] = deviceType;
+    errorObj["device_id"] = device_id; // uuid of the device
+    errorObj["error_message"] = errorMessage;
+    errorObj["timestamp"] = timestamp;
+}
+
+int postErrorsJSONToAPI() {
+
+    if (errorMessages.size() == 0) {
+        return -1; // No errors to send
+    }
+
+    StaticJsonDocument<1024> jsonDoc; 
+
+    // Add the API key to the JSON document
     jsonDoc["api_key"] = api_key;
 
-    char jsonString[500];
+    // Add the error messages
+    jsonDoc["errors"] = errorMessages;
+
+    char jsonString[2048]; 
     serializeJson(jsonDoc, jsonString);
 
-    const char* deviceErrorReportsEndPoint = "https://beevibe-prod-7815d8f510b2.herokuapp.com/api/datacollection/deviceerrorreports/";
+    // Print JSON for debugging
+    Serial.println("Debug - JSON to be sent:");
+    serializeJsonPretty(jsonDoc, Serial);
+    Serial.println(); // New line after JSON output
 
-    // char endPoint[256]; // Buffer to hold the complete endpoint URL
-    // constructEndpointUrl(endPoint, sizeof(endPoint), baseConfigEndPoint, "", "");
-    // debugln(endPoint);
+    const char* endpoint = "https://beevibe-prod-7815d8f510b2.herokuapp.com/api/datacollection/deviceerrorreports/";
 
     HTTPClient http;
-    http.begin(deviceErrorReportsEndPoint);
-
-    // Set header for JSON content type
+    http.begin(endpoint);
     http.addHeader("Content-Type", "application/json");
-
-    // POST request with JSON payload
     int httpResponseCode = http.POST(jsonString);
 
     if (httpResponseCode > 0) {
-        String response = http.getString(); // Get the response to the request
-        debugln(response);
+        String response = http.getString();
+        Serial.println(response);
     } else {
-        debugln("Error on sending POST: " + String(httpResponseCode));
+        Serial.println("Error on sending POST: " + String(httpResponseCode));
     }
 
-    http.end(); // Free resources
+    http.end();
     return httpResponseCode;
 }
+
+
+
 
 
 void printDateTime(const DateTime& dt) {
@@ -204,7 +227,7 @@ bool configureSensorUUIDs(const JsonArray& sensors) {
 
     bool success = preferences.begin("sensor_storage", false); // Open NVS in RW mode
     if (!success) {
-        int responseCode = postErrorToAPI(device_type, api_key, "Failed to open NVS storage");
+        addErrorMessageToJSON("Failed to open NVS storage", device_type, api_key);
         debug("Failed to open NVS storage");
         return false; // Exit if unable to open NVS
     }
@@ -214,12 +237,12 @@ bool configureSensorUUIDs(const JsonArray& sensors) {
     bool errorOccurred = false;
 
     for (JsonObject sensor : sensors) {
-        const char* uuid = sensor["uuid"]; // Extract the UUID
+        const char* sensorUUID = sensor["uuid"]; // Extract the UUID
         // Save each UUID with a unique key
         String key = "sensor" + String(sensorIndex);
-        success = preferences.putString(key.c_str(), String(uuid));
+        success = preferences.putString(key.c_str(), String(sensorUUID));
         if (!success) {
-            strncpy(errorMessage, "Failed to save UUID for a sensor", sizeof(errorMessage));
+            addErrorMessageToJSON("Failed to save UUID for a sensor", device_type, sensorUUID);
             debug("Failed to save UUID for sensor");
             debugln(sensorIndex);
             errorOccurred = true;
@@ -227,14 +250,14 @@ bool configureSensorUUIDs(const JsonArray& sensors) {
         }
         sensorIndex++;
         debug("Sensor UUID saved: ");
-        debugln(uuid);
+        debugln(sensorUUID);
     }
 
     if (!errorOccurred) {
         // Save the count of sensors only if no errors occurred
         success = preferences.putInt("sensorCount", sensorIndex);
         if (!success) {
-            strncpy(errorMessage, "Failed to save sensor count", sizeof(errorMessage));
+            addErrorMessageToJSON("Failed to save sensor count", device_type, api_key);
             debugln("Failed to save sensor count!");
             return false;
         }
@@ -243,8 +266,6 @@ bool configureSensorUUIDs(const JsonArray& sensors) {
     preferences.end(); // Close NVS storage
 
     if (errorOccurred) {
-        // Handle error, e.g., retry, log error, send error message, etc.
-        int responseCode = postErrorToAPI(device_type, api_key, errorMessage);
         debugln("Error occurred while configuring sensor UUIDs");
         return false;
     }
@@ -255,9 +276,9 @@ bool configureSensorUUIDs(const JsonArray& sensors) {
 
 
 
-void processSensorData() {
+void readSensorData() {
     // Initialize NVS
-    preferences.begin("sensor_storage", true);
+    preferences.begin("sensor_uuid_storage", true);
     int sensorCount = preferences.getInt("sensorCount", 0);
 
     NimBLEClient* pClient = NimBLEDevice::createClient();
@@ -299,6 +320,10 @@ void processSensorData() {
 
 void setup (){
     Serial.begin(115200);
+
+    // initialize error messages
+    errorMessages = errorJsonDoc.to<JsonArray>();
+
       // SETUP RTC MODULE
     if (! rtc.begin()) {
       debugln("RTC module is NOT found");
@@ -346,12 +371,11 @@ void programStateMachine() {
     debug("calculatedCurrentCycleNumber: ");
     debugln(calculatedCurrentCycleNumber);
 
-    if(calculatedCurrentCycleNumber == cycleNumber){
-        static programState currentState = programState::BLE_CONNECT_READ_SAVE;
-    }
+    // if(calculatedCurrentCycleNumber == cycleNumber){
+    //     static programState currentState = programState::BLE_CONNECT_READ_SAVE;
+    // }
 
-    // static programState currentState = programState::CONFIG_CHECK;
-    static programState currentState = programState::BLE_CONNECT_READ_SAVE;
+    static programState currentState = programState::CONFIG_CHECK;
 
     switch (currentState) {
       case programState::CONFIG_CHECK: {
@@ -374,6 +398,15 @@ void programStateMachine() {
             if(configJSON["config_sensors"] == true) {
               currentState = programState::SENSOR_CONFIG;
             }
+            // posting any errors to the api before going to sleep
+            addErrorMessageToJSON("test error message 1", device_type, api_key);
+            addErrorMessageToJSON("test error message 2", device_type, api_key);
+            addErrorMessageToJSON("test error message 3", device_type, api_key);
+            postErrorsJSONToAPI();
+            debugln("Going to sleep");
+            // sets sleep timer to however many seconds there are untill the next quater hour (timeslot offset to be included).
+            esp_sleep_enable_timer_wakeup((uint64_t)calculateSleepDuration(rtc.now()) * 1000000); 
+            esp_deep_sleep_start();
 
             break;
         }
@@ -397,14 +430,21 @@ void programStateMachine() {
 
             debugln("Sensor config called and completed without error");
             delay(2000);
-            debugln("sleep now");
-            esp_sleep_enable_timer_wakeup(15 * 1000000); 
+            postErrorsJSONToAPI();
+            debugln("Going to sleep");
+            // sets sleep timer to however many seconds there are untill the next quater hour (timeslot offset to be included).
+            esp_sleep_enable_timer_wakeup((uint64_t)calculateSleepDuration(rtc.now()) * 1000000); 
             esp_deep_sleep_start();
             break;
         }
         case programState::BLE_CONNECT_READ_SAVE: {
             debugln("BLE_CONNECT_READ_SAVE called");
-            processSensorData();
+            readSensorData();
+            postErrorsJSONToAPI();
+            debugln("Going to sleep");
+            // sets sleep timer to however many seconds there are untill the next quater hour (timeslot offset to be included).
+            esp_sleep_enable_timer_wakeup((uint64_t)calculateSleepDuration(rtc.now()) * 1000000); 
+            esp_deep_sleep_start();
             break;
         }
         default:
@@ -413,21 +453,27 @@ void programStateMachine() {
     }
 }
 
+// ################# Some Helpers ##################
+
 int getCurrentCycleNumber(const DateTime& currentTime) {
-    int currentMinute = currentTime.minute();
-    int currentSecond = currentTime.second();
+    int minutesSinceHourStart = currentTime.minute() % 8; // Get the minutes within the current 8-minute window
+    return minutesSinceHourStart / 2; // Divide by 2 to get the cycle number (0 to 3)
+}
 
-    // Calculate the remaining seconds in the current 8-minute window
-    int totalSecondsRemaining = (4 - (currentMinute % 4)) * 60 - currentSecond;
+int calculateSleepDuration(const DateTime& currentTime) {
+    int minutesSinceHourStart = currentTime.minute() % 8;
+    int secondsSinceCycleStart = (minutesSinceHourStart % 2) * 60 + currentTime.second();
+    int sleepDuration = (2 * 60) - secondsSinceCycleStart;
 
-    // If less than 10 seconds remain, treat as the beginning of the next cycle
-    if (totalSecondsRemaining <= 10) {
-        return 0;
+    // Add 5 seconds as a buffer
+    sleepDuration += 5;
+
+    // Ensure sleep duration does not exceed the cycle length
+    if (sleepDuration > (2 * 60)) {
+        sleepDuration = (2 * 60);
     }
 
-    // Otherwise, calculate the cycle number normally
-    int minutesSinceHourStart = currentMinute % 4;
-    return minutesSinceHourStart / 2;
+    return sleepDuration;
 }
 
 

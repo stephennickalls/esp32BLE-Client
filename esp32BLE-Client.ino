@@ -51,11 +51,11 @@ int currentCycleNumber;
 const int cycleNumber = 0;  // the cycle number that the system makes data available on
 
 
-// Use the instance to access methods
-const char* ssid = wifiCreds.getSSID(); 
-const char* password = wifiCreds.getPassword(); 
-// const char* ssid = wifiCreds.getOfficeSSID(); 
-// const char* password = wifiCreds.getOfficePassword(); 
+// // Use the instance to access methods
+// const char* ssid = wifiCreds.getSSID(); 
+// const char* password = wifiCreds.getPassword(); 
+const char* ssid = wifiCreds.getOfficeSSID(); 
+const char* password = wifiCreds.getOfficePassword(); 
 
 
 enum class programState: uint8_t {
@@ -142,7 +142,7 @@ void addErrorMessageToJSON(const char* errorMessage, const char* deviceType, con
     errorObj["device_type"] = deviceType;
     errorObj["device_id"] = device_id; // uuid of the device
     errorObj["error_message"] = errorMessage;
-    errorObj["timestamp"] = timestamp;
+    errorObj["reported_at"] = timestamp;
 }
 
 int postErrorsJSONToAPI() {
@@ -176,9 +176,10 @@ int postErrorsJSONToAPI() {
 
     if (httpResponseCode > 0) {
         String response = http.getString();
-        Serial.println(response);
+        debug("response from api: ");
+        debugln(response);
     } else {
-        Serial.println("Error on sending POST: " + String(httpResponseCode));
+        debugln("Error on sending POST: " + String(httpResponseCode));
     }
 
     http.end();
@@ -227,7 +228,7 @@ bool configureSensorUUIDs(const JsonArray& sensors) {
 
     bool success = preferences.begin("sensor_storage", false); // Open NVS in RW mode
     if (!success) {
-        addErrorMessageToJSON("Failed to open NVS storage", device_type, api_key);
+        addErrorMessageToJSON("Failed to open NVS storage", "hub", api_key);
         debug("Failed to open NVS storage");
         return false; // Exit if unable to open NVS
     }
@@ -242,7 +243,7 @@ bool configureSensorUUIDs(const JsonArray& sensors) {
         String key = "sensor" + String(sensorIndex);
         success = preferences.putString(key.c_str(), String(sensorUUID));
         if (!success) {
-            addErrorMessageToJSON("Failed to save UUID for a sensor", device_type, sensorUUID);
+            addErrorMessageToJSON("Failed to save UUID for a sensor", "sensor", sensorUUID);
             debug("Failed to save UUID for sensor");
             debugln(sensorIndex);
             errorOccurred = true;
@@ -257,7 +258,7 @@ bool configureSensorUUIDs(const JsonArray& sensors) {
         // Save the count of sensors only if no errors occurred
         success = preferences.putInt("sensorCount", sensorIndex);
         if (!success) {
-            addErrorMessageToJSON("Failed to save sensor count", device_type, api_key);
+            addErrorMessageToJSON("Failed to save sensor count", "hub", api_key);
             debugln("Failed to save sensor count!");
             return false;
         }
@@ -357,7 +358,7 @@ void loop (){
   delay(3000);
 }
 
-//################### Finite state machine ############################
+//###################  State machine ############################
 void programStateMachine() {
   // CONFIG_CHECK,
   // SENSOR_CONFIG,
@@ -399,9 +400,9 @@ void programStateMachine() {
               currentState = programState::SENSOR_CONFIG;
             }
             // posting any errors to the api before going to sleep
-            addErrorMessageToJSON("test error message 1", device_type, api_key);
-            addErrorMessageToJSON("test error message 2", device_type, api_key);
-            addErrorMessageToJSON("test error message 3", device_type, api_key);
+            addErrorMessageToJSON("test error message 1", "hub", api_key);
+            addErrorMessageToJSON("test error message 2", "hub", api_key);
+            addErrorMessageToJSON("test error message 3", "hub", api_key);
             postErrorsJSONToAPI();
             debugln("Going to sleep");
             // sets sleep timer to however many seconds there are untill the next quater hour (timeslot offset to be included).
